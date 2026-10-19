@@ -7,8 +7,6 @@ data, then writes one self-contained HTML file (charts are embedded).
 API keys come from environment variables:
   FRED_API_KEY   needed for the rates, credit and economy sections
                  (free: https://fred.stlouisfed.org/docs/api/api_key.html)
-  FMP_API_KEY    needed for the economic and earnings calendars
-                 (https://site.financialmodelingprep.com/developer/docs)
   EARNINGS_UNIVERSE_FILE   optional .xlsx/.csv with a 'symbol' column to filter
                  the earnings calendar; defaults to the S&P 1500 from Wikipedia
 
@@ -25,7 +23,7 @@ import base64
 import html
 import io
 import os
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import matplotlib
 
@@ -78,11 +76,24 @@ FRED_SERIES = {
     "RSAFS": "Retail Sales ($M)",
 }
 
-UST = {"2Y": "DGS2", "3Y": "DGS3", "5Y": "DGS5", "7Y": "DGS7",
-       "10Y": "DGS10", "20Y": "DGS20", "30Y": "DGS30"}
+UST = {
+    "2Y": "DGS2",
+    "3Y": "DGS3",
+    "5Y": "DGS5",
+    "7Y": "DGS7",
+    "10Y": "DGS10",
+    "20Y": "DGS20",
+    "30Y": "DGS30",
+}
 TIPS = {"5Y": "DFII5", "10Y": "DFII10", "20Y": "DFII20", "30Y": "DFII30"}
-OAS = {"BBB": "BAMLC0A4CBBB", "A": "BAMLC0A3CA", "AA": "BAMLC0A2CAA",
-       "AAA": "BAMLC0A1CAAA", "IG": "BAMLC0A0CM", "HY": "BAMLH0A0HYM2"}
+OAS = {
+    "BBB": "BAMLC0A4CBBB",
+    "A": "BAMLC0A3CA",
+    "AA": "BAMLC0A2CAA",
+    "AAA": "BAMLC0A1CAAA",
+    "IG": "BAMLC0A0CM",
+    "HY": "BAMLH0A0HYM2",
+}
 
 # Yield-curve comparisons, in calendar days
 CURVE_LOOKBACKS = {"1W": 7, "1M": 30, "3M": 90, "6M": 180, "1Y": 365}
@@ -102,14 +113,37 @@ MARKET_TICKERS = {
     "GC=F": "Gold",
 }
 
-REL_VALUE_ASSETS = ["SPY", "QQQ", "MDY", "IWM", "EFA", "EEM", "LQD", "TLT",
-                    "TIP", "JNK", "GLD", "VNQ", "DBC", "USO"]
-REL_VALUE_SECTORS = ["XLK", "XLV", "XLF", "XLY", "XLC", "XLI", "XLP", "XLE",
-                     "XLU", "XLB", "XLRE"]
+REL_VALUE_ASSETS = [
+    "SPY",
+    "QQQ",
+    "MDY",
+    "IWM",
+    "EFA",
+    "EEM",
+    "LQD",
+    "TLT",
+    "TIP",
+    "JNK",
+    "GLD",
+    "VNQ",
+    "DBC",
+    "USO",
+]
+REL_VALUE_SECTORS = [
+    "XLK",
+    "XLV",
+    "XLF",
+    "XLY",
+    "XLC",
+    "XLI",
+    "XLP",
+    "XLE",
+    "XLU",
+    "XLB",
+    "XLRE",
+]
 
 NEWS_TICKERS = ["^GSPC", "^DJI", "^IXIC"]
-
-FMP_URL = "https://financialmodelingprep.com/stable"
 
 
 # --------------------------------------------------------------------------
@@ -118,8 +152,12 @@ FMP_URL = "https://financialmodelingprep.com/stable"
 def zstats(s):
     """Latest value, mean, and z-score of a series (the notebook's curr/avg/z block)."""
     s = s.dropna()
-    return {"asof": s.index[-1].date(), "current": s.iloc[-1],
-            "mean": s.mean(), "z": (s.iloc[-1] - s.mean()) / s.std()}
+    return {
+        "asof": s.index[-1].date(),
+        "current": s.iloc[-1],
+        "mean": s.mean(),
+        "z": (s.iloc[-1] - s.mean()) / s.std(),
+    }
 
 
 def as_of_or_before(df, when):
@@ -166,10 +204,12 @@ def bar_chart(s, title, ylabel, width):
 
 def card(label, s, unit="", fmt="{:,.1f}"):
     st = zstats(s)
-    return (f'<div class="card"><div class="label">{label}</div>'
-            f'<div class="value">{fmt.format(st["current"])}{unit}</div>'
-            f'<div class="sub">mean {fmt.format(st["mean"])}{unit} · z {st["z"]:+.1f}'
-            f' · as of {st["asof"]}</div></div>')
+    return (
+        f'<div class="card"><div class="label">{label}</div>'
+        f'<div class="value">{fmt.format(st["current"])}{unit}</div>'
+        f'<div class="sub">mean {fmt.format(st["mean"])}{unit} · z {st["z"]:+.1f}'
+        f" · as of {st['asof']}</div></div>"
+    )
 
 
 def metric(label, s, unit="", fmt="{:,.1f}", chart=None):
@@ -181,7 +221,7 @@ def metric(label, s, unit="", fmt="{:,.1f}", chart=None):
 def table(df, formats=None, index=True):
     df = df.copy()
     for col, fmt in (formats or {}).items():
-        df[col] = df[col].map(lambda x: "" if pd.isna(x) else fmt.format(x))
+        df[col] = df[col].map(lambda x, fmt=fmt: "" if pd.isna(x) else fmt.format(x))
     return df.to_html(classes="tbl", border=0, na_rep="", index=index, escape=True)
 
 
@@ -196,24 +236,22 @@ def fetch_fred(api_key, start):
     for sid in FRED_SERIES:
         try:
             out[sid] = fred.get_series(sid, observation_start=start).dropna()
-        except Exception:
+        except Exception:  # noqa: BLE001 - skip any series that fails to download
             failed.append(sid)
     if not out:
         raise RuntimeError("no FRED series could be downloaded")
     return out, failed
 
 
-def fmp(endpoint, key, **params):
-    r = requests.get(f"{FMP_URL}/{endpoint}", params={**params, "apikey": key}, timeout=30)
-    r.raise_for_status()
-    return pd.DataFrame(r.json())
-
-
 # --------------------------------------------------------------------------
 # Sections
 # --------------------------------------------------------------------------
 def section_snapshot(f, failed):
-    rows = [(FRED_SERIES[sid], s.iloc[-1], s.index[-1].date()) for sid, s in f.items() if len(s)]
+    rows = [
+        (FRED_SERIES[sid], s.iloc[-1], s.index[-1].date())
+        for sid, s in f.items()
+        if len(s)
+    ]
     df = pd.DataFrame(rows, columns=["Series", "Latest", "As of"])
     note = f'<p class="note">Not downloaded: {", ".join(failed)}</p>' if failed else ""
     return note + table(df, {"Latest": "{:,.2f}"}, index=False)
@@ -224,80 +262,107 @@ def section_rates(f, start):
     tips = pd.concat({k: f[v] for k, v in TIPS.items()}, axis=1).dropna()
     recent_ust = ust.loc[start:]
 
-    out = ['<div class="grid">',
-           metric("2s10s curve", (recent_ust["10Y"] - recent_ust["2Y"]) * 100, " bps"),
-           metric("10s30s curve", (recent_ust["30Y"] - recent_ust["10Y"]) * 100, " bps"),
-           metric("Fed Funds", f["FEDFUNDS"].loc[start:], "%", "{:.2f}"),
-           metric("SOFR", f["SOFR"].loc[start:], "%", "{:.2f}"),
-           "</div>"]
+    out = [
+        '<div class="grid">',
+        metric("2s10s curve", (recent_ust["10Y"] - recent_ust["2Y"]) * 100, " bps"),
+        metric("10s30s curve", (recent_ust["30Y"] - recent_ust["10Y"]) * 100, " bps"),
+        metric("Fed Funds", f["FEDFUNDS"].loc[start:], "%", "{:.2f}"),
+        metric("SOFR", f["SOFR"].loc[start:], "%", "{:.2f}"),
+        "</div>",
+    ]
 
     for name, df in (("US Treasury yields", ust), ("US TIPS yields", tips)):
         last = df.index[-1]
-        prev = df.loc[:last - timedelta(days=7)]
+        prev = df.loc[: last - timedelta(days=7)]
         wow = pd.DataFrame({"Current": df.iloc[-1], "1W ago": prev.iloc[-1]})
         wow["Change"] = wow["Current"] - wow["1W ago"]
         cols = [c for c in df.columns if c in ("2Y", "5Y", "10Y", "20Y", "30Y")]
         out.append(f"<h3>{name}</h3>")
         out.append(line_chart(df.loc[start:, cols], name, "Yield %"))
         out.append(f'<p class="note">{last.date()} vs {prev.index[-1].date()}</p>')
-        out.append(table(wow, {"Current": "{:.2f}", "1W ago": "{:.2f}", "Change": "{:+.2f}"}))
+        out.append(
+            table(wow, {"Current": "{:.2f}", "1W ago": "{:.2f}", "Change": "{:+.2f}"})
+        )
 
     # Yield curve today vs calendar-day lookbacks
     last = ust.index[-1]
     mats = [int(m[:-1]) for m in ust.columns]
     fig, ax = plt.subplots(figsize=(8, 4.5))
-    ax.plot(mats, ust.iloc[-1], marker="o", linewidth=2.5, label=f"Current ({last.date()})")
+    ax.plot(
+        mats, ust.iloc[-1], marker="o", linewidth=2.5, label=f"Current ({last.date()})"
+    )
     curve = pd.DataFrame({"Current": ust.iloc[-1].values}, index=ust.columns)
     for label, days in CURVE_LOOKBACKS.items():
         then = as_of_or_before(ust, last - timedelta(days=days))
-        ax.plot(mats, then, marker=".", alpha=0.8, label=f"{label} ago ({then.name.date()})")
+        ax.plot(
+            mats, then, marker=".", alpha=0.8, label=f"{label} ago ({then.name.date()})"
+        )
         curve[f"Chg vs {label}"] = (ust.iloc[-1] - then).values
     style(ax, "US Treasury curve", "Yield %")
     ax.set_xlabel("Maturity (years)")
     ax.legend(fontsize=8)
     out.append("<h3>Treasury curve changes</h3>")
     out.append(img(fig))
-    out.append(table(curve, {c: ("{:.2f}" if c == "Current" else "{:+.2f}") for c in curve.columns}))
+    out.append(
+        table(
+            curve,
+            {c: ("{:.2f}" if c == "Current" else "{:+.2f}") for c in curve.columns},
+        )
+    )
     return "\n".join(out)
 
 
 def section_credit(f, start):
-    oas = pd.concat({k: f[v] for k, v in OAS.items()}, axis=1).dropna().loc[start:] * 100
+    oas = (
+        pd.concat({k: f[v] for k, v in OAS.items()}, axis=1).dropna().loc[start:] * 100
+    )
     by_rating = oas[["BBB", "A", "AA", "AAA"]]
     latest = by_rating.tail(1).copy()
     latest.index = [latest.index[0].date()]
-    return "\n".join([
-        line_chart(by_rating, "IG credit spreads by rating (OAS)", "Spread (bps)"),
-        table(latest, {c: "{:.0f}" for c in latest.columns}),
-        '<div class="grid">',
-        metric("BBB − AAA OAS", oas["BBB"] - oas["AAA"], " bps"),
-        metric("HY − IG OAS", oas["HY"] - oas["IG"], " bps"),
-        metric("IG OAS", oas["IG"], " bps"),
-        metric("High yield OAS", oas["HY"], " bps"),
-        "</div>",
-    ])
+    return "\n".join(
+        [
+            line_chart(by_rating, "IG credit spreads by rating (OAS)", "Spread (bps)"),
+            table(latest, {c: "{:.0f}" for c in latest.columns}),
+            '<div class="grid">',
+            metric("BBB − AAA OAS", oas["BBB"] - oas["AAA"], " bps"),
+            metric("HY − IG OAS", oas["HY"] - oas["IG"], " bps"),
+            metric("IG OAS", oas["IG"], " bps"),
+            metric("High yield OAS", oas["HY"], " bps"),
+            "</div>",
+        ]
+    )
 
 
 def section_economy(f, start):
-    w = lambda s: s.loc[start:]  # noqa: E731
+    w = lambda s: s.loc[start:]
     gdp_qoq = w(((f["GDPC1"].pct_change() + 1) ** 4 - 1) * 100)
     nfp_chg = w(f["PAYEMS"].diff())
-    return "\n".join([
-        '<div class="grid">',
-        metric("Real GDP growth (QoQ annualized)", gdp_qoq, "%",
-               chart=bar_chart(gdp_qoq, "Real GDP growth (QoQ annualized)", "%", 60)),
-        metric("Change in nonfarm payrolls", nfp_chg, "k",
-               chart=bar_chart(nfp_chg, "Change in nonfarm payrolls", "Thousands", 20)),
-        metric("Unemployment rate", w(f["UNRATE"]), "%"),
-        metric("Initial jobless claims", w(f["ICSA"]), "", "{:,.0f}"),
-        metric("CPI (YoY)", w(f["CPIAUCSL"].pct_change(12) * 100), "%"),
-        metric("Core CPI (YoY)", w(f["CPILFESL"].pct_change(12) * 100), "%"),
-        metric("Core PCE (YoY)", w(f["PCEPILFE"].pct_change(12) * 100), "%"),
-        metric("Retail sales (MoM)", w(f["RSAFS"].pct_change() * 100), "%"),
-        metric("5Y breakeven inflation", w(f["T5YIE"]), "%", "{:.2f}"),
-        metric("VIX", w(f["VIXCLS"]), "", "{:.2f}"),
-        "</div>",
-    ])
+    return "\n".join(
+        [
+            '<div class="grid">',
+            metric(
+                "Real GDP growth (QoQ annualized)",
+                gdp_qoq,
+                "%",
+                chart=bar_chart(gdp_qoq, "Real GDP growth (QoQ annualized)", "%", 60),
+            ),
+            metric(
+                "Change in nonfarm payrolls",
+                nfp_chg,
+                "k",
+                chart=bar_chart(nfp_chg, "Change in nonfarm payrolls", "Thousands", 20),
+            ),
+            metric("Unemployment rate", w(f["UNRATE"]), "%"),
+            metric("Initial jobless claims", w(f["ICSA"]), "", "{:,.0f}"),
+            metric("CPI (YoY)", w(f["CPIAUCSL"].pct_change(12) * 100), "%"),
+            metric("Core CPI (YoY)", w(f["CPILFESL"].pct_change(12) * 100), "%"),
+            metric("Core PCE (YoY)", w(f["PCEPILFE"].pct_change(12) * 100), "%"),
+            metric("Retail sales (MoM)", w(f["RSAFS"].pct_change() * 100), "%"),
+            metric("5Y breakeven inflation", w(f["T5YIE"]), "%", "{:.2f}"),
+            metric("VIX", w(f["VIXCLS"]), "", "{:.2f}"),
+            "</div>",
+        ]
+    )
 
 
 def add_indicators(df):
@@ -316,10 +381,14 @@ def add_indicators(df):
 
 def ohlc_chart(df, title):
     x = np.arange(len(df))
-    colors = np.where(df["Close"] > df["Open"], "green",
-                      np.where(df["Close"] < df["Open"], "red", "gray"))
-    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(9, 6), sharex=True,
-                                   gridspec_kw={"height_ratios": [3, 1]})
+    colors = np.where(
+        df["Close"] > df["Open"],
+        "green",
+        np.where(df["Close"] < df["Open"], "red", "gray"),
+    )
+    fig, (ax1, ax2) = plt.subplots(
+        2, 1, figsize=(9, 6), sharex=True, gridspec_kw={"height_ratios": [3, 1]}
+    )
     ax1.vlines(x, df["Low"], df["High"], color=colors, linewidth=1)
     ax1.hlines(df["Open"], x - 0.5, x, color="black", linewidth=1)
     ax1.hlines(df["Close"], x, x + 0.5, color="black", linewidth=1)
@@ -344,8 +413,13 @@ def ohlc_chart(df, title):
 
 
 def section_markets():
-    raw = yf.download(list(MARKET_TICKERS), period="2y", interval="1d",
-                      group_by="ticker", progress=False)
+    raw = yf.download(
+        list(MARKET_TICKERS),
+        period="2y",
+        interval="1d",
+        group_by="ticker",
+        progress=False,
+    )
     rows, charts = [], []
     for ticker, name in MARKET_TICKERS.items():
         try:
@@ -354,37 +428,60 @@ def section_markets():
             continue
         df = df[df.index > df.index[-1] - timedelta(days=365)]
         px, prev, last = df["Close"].iloc[-1], df["Close"].iloc[-2], df.iloc[-1]
-        rows.append({
-            "Name": name, "Ticker": ticker, "As of": df.index[-1].date(),
-            "Price": px, "Chg": px - prev, "Chg %": px / prev - 1,
-            "1Y low": min(df["Low"].min(), px), "1Y high": max(df["High"].max(), px),
-            "50d MA": last["MA50"], "200d MA": last["MA200"], "RSI": last["RSI"],
-            "vs BB upper": px / last["BB_up"] - 1, "vs BB mid": px / last["BB_mid"] - 1,
-            "vs BB lower": px / last["BB_lo"] - 1,
-        })
+        rows.append(
+            {
+                "Name": name,
+                "Ticker": ticker,
+                "As of": df.index[-1].date(),
+                "Price": px,
+                "Chg": px - prev,
+                "Chg %": px / prev - 1,
+                "1Y low": min(df["Low"].min(), px),
+                "1Y high": max(df["High"].max(), px),
+                "50d MA": last["MA50"],
+                "200d MA": last["MA200"],
+                "RSI": last["RSI"],
+                "vs BB upper": px / last["BB_up"] - 1,
+                "vs BB mid": px / last["BB_mid"] - 1,
+                "vs BB lower": px / last["BB_lo"] - 1,
+            }
+        )
         charts.append(ohlc_chart(df, f"{name} ({ticker})"))
     if not rows:
         raise RuntimeError("no market data returned")
     num = "{:,.2f}"
     pct = "{:+.2%}"
-    summary = table(pd.DataFrame(rows), {
-        "Price": num, "Chg": "{:+,.2f}", "Chg %": pct, "1Y low": num, "1Y high": num,
-        "50d MA": num, "200d MA": num, "RSI": "{:.1f}",
-        "vs BB upper": pct, "vs BB mid": pct, "vs BB lower": pct}, index=False)
+    summary = table(
+        pd.DataFrame(rows),
+        {
+            "Price": num,
+            "Chg": "{:+,.2f}",
+            "Chg %": pct,
+            "1Y low": num,
+            "1Y high": num,
+            "50d MA": num,
+            "200d MA": num,
+            "RSI": "{:.1f}",
+            "vs BB upper": pct,
+            "vs BB mid": pct,
+            "vs BB lower": pct,
+        },
+        index=False,
+    )
     return summary + '<div class="charts">' + "\n".join(charts) + "</div>"
 
 
 def long_name(ticker):
     try:
         return yf.Ticker(ticker).info.get("longName") or ticker
-    except Exception:
+    except Exception:  # noqa: BLE001 - name lookup is cosmetic; fall back to ticker
         return ticker
 
 
 def relative_value(tickers):
     """For each ticker, z-score of its 1Y cumulative return gap vs every other
     ticker, averaged across pairs (same method as the original notebook)."""
-    start = datetime.today() - timedelta(days=365)
+    start = pd.Timestamp.today() - timedelta(days=365)
     data = yf.download(tickers, period="2y", progress=False)
     close = data["Close"][tickers].loc[start:].ffill()
     high, low = data["High"][tickers].loc[start:], data["Low"][tickers].loc[start:]
@@ -399,64 +496,145 @@ def relative_value(tickers):
                 zs.append((delta.iloc[-1] - delta.mean()) / delta.std())
         zs = pd.Series(zs)
         px, lo = close[lt].iloc[-1], low[lt].min()
-        rows[lt] = {"Name": long_name(lt), "Price": px, "52w high": high[lt].max(),
-                    "52w low": lo, "% off 52w low": px / lo - 1,
-                    "Z-score": zs.mean(), "Z st.dev": zs.std()}
+        rows[lt] = {
+            "Name": long_name(lt),
+            "Price": px,
+            "52w high": high[lt].max(),
+            "52w low": lo,
+            "% off 52w low": px / lo - 1,
+            "Z-score": zs.mean(),
+            "Z st.dev": zs.std(),
+        }
     df = pd.DataFrame.from_dict(rows, orient="index").sort_values("Z-score")
     df.index.name = "Ticker"
-    return table(df, {"Price": "{:,.2f}", "52w high": "{:,.2f}", "52w low": "{:,.2f}",
-                      "% off 52w low": "{:.0%}", "Z-score": "{:+.2f}", "Z st.dev": "{:.2f}"})
+    return table(
+        df,
+        {
+            "Price": "{:,.2f}",
+            "52w high": "{:,.2f}",
+            "52w low": "{:,.2f}",
+            "% off 52w low": "{:.0%}",
+            "Z-score": "{:+.2f}",
+            "Z st.dev": "{:.2f}",
+        },
+    )
 
 
 def section_rel_value():
-    return ("<h3>Broad asset classes</h3>" + relative_value(REL_VALUE_ASSETS)
-            + "<h3>S&amp;P 500 sectors</h3>" + relative_value(REL_VALUE_SECTORS))
+    return (
+        "<h3>Broad asset classes</h3>"
+        + relative_value(REL_VALUE_ASSETS)
+        + "<h3>S&amp;P 500 sectors</h3>"
+        + relative_value(REL_VALUE_SECTORS)
+    )
 
 
 def earnings_universe():
     path = os.environ.get("EARNINGS_UNIVERSE_FILE")
     if path:
-        df = pd.read_excel(path) if path.lower().endswith((".xlsx", ".xls")) else pd.read_csv(path)
+        df = (
+            pd.read_excel(path)
+            if path.lower().endswith((".xlsx", ".xls"))
+            else pd.read_csv(path)
+        )
         return set(df["symbol"].astype(str).str.upper()), os.path.basename(path)
     symbols = set()
     for n in (500, 400, 600):
-        page = requests.get(f"https://en.wikipedia.org/wiki/List_of_S%26P_{n}_companies",
-                            headers={"User-Agent": "market_report.py"}, timeout=30)
+        page = requests.get(
+            f"https://en.wikipedia.org/wiki/List_of_S%26P_{n}_companies",
+            headers={"User-Agent": "market_report.py"},
+            timeout=30,
+        )
         page.raise_for_status()
-        t = next(t for t in pd.read_html(io.StringIO(page.text)) if "Symbol" in t.columns)
-        symbols |= set(t["Symbol"].astype(str).str.replace(".", "-", regex=False).str.upper())
+        t = next(
+            t for t in pd.read_html(io.StringIO(page.text)) if "Symbol" in t.columns
+        )
+        symbols |= set(
+            t["Symbol"].astype(str).str.replace(".", "-", regex=False).str.upper()
+        )
     return symbols, "S&P 1500 (Wikipedia)"
 
 
-def section_calendars(key):
-    today = datetime.today()
-    window = {"from": (today - timedelta(days=7)).strftime("%Y-%m-%d"),
-              "to": (today + timedelta(days=7)).strftime("%Y-%m-%d")}
+def yahoo_calendar(fetch, page=100, max_pages=10):
+    """Page through a yfinance calendar (Yahoo returns at most 100 rows per call)."""
+    frames = []
+    for i in range(max_pages):
+        df = fetch(limit=page, offset=i * page, force=True)
+        frames.append(df)
+        if len(df) < page:
+            break
+    return pd.concat(frames)
 
-    econ = fmp("economic-calendar", key, **window)
-    if "country" in econ.columns:
-        econ = econ[econ["country"] == "US"]
-    econ = econ[econ["impact"] == "High"].sort_values("date")
-    econ = econ[[c for c in ["date", "event", "previous", "estimate", "actual", "change",
-                             "changePercentage", "unit"] if c in econ.columns]]
 
-    earn = fmp("earnings-calendar", key, **window)
+def section_calendars():
+    today = pd.Timestamp.today()
+    start = (today - timedelta(days=7)).strftime("%Y-%m-%d")
+    end = (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    cal = yf.Calendars(start=start, end=end)
+
+    econ = yahoo_calendar(cal.get_economic_events_calendar).reset_index()
+    econ = econ[econ["Region"] == "US"].sort_values("Event Time")
+    # Yahoo's column for the reporting period isn't documented; keep whichever exist
+    econ = econ[
+        [
+            c
+            for c in [
+                "Event Time",
+                "Event",
+                "For",
+                "Period",
+                "Actual",
+                "Expected",
+                "Last",
+                "Revised",
+            ]
+            if c in econ.columns
+        ]
+    ]
+
+    earn = yahoo_calendar(
+        lambda **kw: cal.get_earnings_calendar(filter_most_active=False, **kw)
+    ).reset_index()
     universe, source = earnings_universe()
-    earn = earn[earn["symbol"].isin(universe)].sort_values(["date", "symbol"])
-    for col in ("revenueActual", "revenueEstimated"):
-        earn[col] = earn[col] / 1e9
-    earn = earn.rename(columns={"revenueActual": "revenueActual ($B)",
-                                "revenueEstimated": "revenueEstimated ($B)"})
-    earn = earn[[c for c in ["symbol", "date", "epsActual", "epsEstimated", "revenueActual ($B)",
-                             "revenueEstimated ($B)"] if c in earn.columns]]
+    earn = earn[earn["Symbol"].isin(universe)].drop_duplicates("Symbol")
+    earn = earn.sort_values(["Event Start Date", "Symbol"])
+    earn["Marketcap"] = earn["Marketcap"] / 1e9
+    earn = earn.rename(
+        columns={"Event Start Date": "Date", "Marketcap": "Mkt cap ($B)"}
+    )
+    earn = earn[
+        [
+            "Date",
+            "Symbol",
+            "Company",
+            "Timing",
+            "Mkt cap ($B)",
+            "EPS Estimate",
+            "Reported EPS",
+            "Surprise(%)",
+        ]
+    ]
 
-    return ("<h3>Economic calendar (US, high impact)</h3>"
-            + table(econ, {"previous": "{:,.2f}", "estimate": "{:,.2f}", "actual": "{:,.2f}",
-                           "change": "{:+,.2f}", "changePercentage": "{:+.1f}%"}, index=False)
-            + f"<h3>Earnings calendar ({html.escape(source)})</h3>"
-            + table(earn, {"epsActual": "{:.2f}", "epsEstimated": "{:.2f}",
-                           "revenueActual ($B)": "{:,.2f}", "revenueEstimated ($B)": "{:,.2f}"},
-                    index=False))
+    num = "{:,.2f}"
+    return (
+        "<h3>Economic calendar (US)</h3>"
+        + table(
+            econ,
+            {"Actual": num, "Expected": num, "Last": num, "Revised": num},
+            index=False,
+        )
+        + f"<h3>Earnings calendar ({html.escape(source)})</h3>"
+        + table(
+            earn,
+            {
+                "Mkt cap ($B)": "{:,.1f}",
+                "EPS Estimate": num,
+                "Reported EPS": num,
+                "Surprise(%)": "{:+.1f}%",
+            },
+            index=False,
+        )
+    )
 
 
 def section_headlines(limit=15):
@@ -464,22 +642,36 @@ def section_headlines(limit=15):
     for t in NEWS_TICKERS:
         for a in yf.Ticker(t).news or []:
             c = a.get("content", a)
-            url = ((c.get("canonicalUrl") or {}).get("url")
-                   or (c.get("clickThroughUrl") or {}).get("url") or a.get("link"))
+            url = (
+                (c.get("canonicalUrl") or {}).get("url")
+                or (c.get("clickThroughUrl") or {}).get("url")
+                or a.get("link")
+            )
             if not url or url in items:
                 continue
             published = c.get("pubDate") or (
-                datetime.fromtimestamp(a["providerPublishTime"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-                if a.get("providerPublishTime") else "")
-            items[url] = {"title": c.get("title", ""), "summary": c.get("summary", ""),
-                          "publisher": (c.get("provider") or {}).get("displayName") or a.get("publisher", ""),
-                          "published": published}
+                datetime.fromtimestamp(a["providerPublishTime"], UTC).strftime(
+                    "%Y-%m-%dT%H:%M:%SZ"
+                )
+                if a.get("providerPublishTime")
+                else ""
+            )
+            items[url] = {
+                "title": c.get("title", ""),
+                "summary": c.get("summary", ""),
+                "publisher": (c.get("provider") or {}).get("displayName")
+                or a.get("publisher", ""),
+                "published": published,
+            }
     if not items:
         raise RuntimeError("no headlines returned")
     top = sorted(items.items(), key=lambda kv: kv[1]["published"], reverse=True)[:limit]
-    li = [f'<li><a href="{html.escape(url)}">{html.escape(n["title"])}</a>'
-          f'<div class="sub">{html.escape(n["publisher"])} · {html.escape(n["published"])}</div>'
-          f'<div>{html.escape(n["summary"])}</div></li>' for url, n in top]
+    li = [
+        f'<li><a href="{html.escape(url)}">{html.escape(n["title"])}</a>'
+        f'<div class="sub">{html.escape(n["publisher"])} · {html.escape(n["published"])}</div>'
+        f"<div>{html.escape(n['summary'])}</div></li>"
+        for url, n in top
+    ]
     return '<ul class="news">' + "\n".join(li) + "</ul>"
 
 
@@ -506,24 +698,19 @@ img{max-width:100%;height:auto;display:block;margin:8px 0}
 
 def build_report(years):
     start = pd.Timestamp.today().normalize() - pd.DateOffset(years=years)
-    fred_key, fmp_key = os.environ.get("FRED_API_KEY"), os.environ.get("FMP_API_KEY")
+    fred_key = os.environ.get("FRED_API_KEY")
 
     f, failed, fred_error = None, [], "FRED_API_KEY is not set"
     if fred_key:
         try:
             # one extra year so YoY changes and 1Y curve lookbacks cover the whole window
             f, failed = fetch_fred(fred_key, start - pd.DateOffset(years=1))
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - report the error in the FRED sections
             fred_error = f"FRED download failed: {e}"
 
     def needs_fred(build):
         if f is None:
             raise RuntimeError(fred_error)
-        return build()
-
-    def needs_fmp(build):
-        if not fmp_key:
-            raise RuntimeError("FMP_API_KEY is not set")
         return build()
 
     plan = [
@@ -533,7 +720,7 @@ def build_report(years):
         ("Economy", lambda: needs_fred(lambda: section_economy(f, start))),
         ("Markets", section_markets),
         ("Relative value", section_rel_value),
-        ("Calendars", lambda: needs_fmp(lambda: section_calendars(fmp_key))),
+        ("Calendars", section_calendars),
         ("Headlines", section_headlines),
     ]
 
@@ -542,30 +729,40 @@ def build_report(years):
         print(f"Building {title}...")
         try:
             body = build()
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - one failed section shouldn't sink the report
             body = f'<p class="err">Skipped: {html.escape(str(e))}</p>'
             print(f"  skipped: {e}")
         sections.append((title, body))
 
-    anchor = lambda t: t.lower().replace(" ", "-")  # noqa: E731
+    anchor = lambda t: t.lower().replace(" ", "-")
     nav = " ".join(f'<a href="#{anchor(t)}">{t}</a>' for t, _ in sections)
     body = "\n".join(f'<h2 id="{anchor(t)}">{t}</h2>\n{b}' for t, b in sections)
     stamp = datetime.now().strftime("%Y-%m-%d %H:%M")
-    return (f'<!doctype html><html><head><meta charset="utf-8">'
-            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
-            f"<title>Market Report {stamp[:10]}</title><style>{CSS}</style></head><body><main>"
-            f'<h1>Market and Economic Summary</h1><p class="note">Generated {stamp} · '
-            f"stats use a {years}-year window (credit spreads: FRED limits ICE data to ~3 years)</p>"
-            f"<nav>{nav}</nav>{body}</main></body></html>")
+    return (
+        f'<!doctype html><html><head><meta charset="utf-8">'
+        f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+        f"<title>Market Report {stamp[:10]}</title><style>{CSS}</style></head><body><main>"
+        f'<h1>Market and Economic Summary</h1><p class="note">Generated {stamp} · '
+        f"stats use a {years}-year window (credit spreads: FRED limits ICE data to ~3 years)</p>"
+        f"<nav>{nav}</nav>{body}</main></body></html>"
+    )
 
 
 def main():
-    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--years", type=int, default=5, help="history window for FRED stats (default 5)")
-    ap.add_argument("--out", help="output file (default reports/market_report_YYYY-MM-DD.html)")
+    ap = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument(
+        "--years", type=int, default=5, help="history window for FRED stats (default 5)"
+    )
+    ap.add_argument(
+        "--out", help="output file (default reports/market_report_YYYY-MM-DD.html)"
+    )
     args = ap.parse_args()
 
-    out = args.out or os.path.join("reports", f"market_report_{datetime.now():%Y-%m-%d}.html")
+    out = args.out or os.path.join(
+        "reports", f"market_report_{datetime.now():%Y-%m-%d}.html"
+    )
     os.makedirs(os.path.dirname(out) or ".", exist_ok=True)
     with open(out, "w", encoding="utf-8") as fh:
         fh.write(build_report(args.years))

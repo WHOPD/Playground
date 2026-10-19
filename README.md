@@ -5,12 +5,11 @@
 `market_report.py` builds a market and economic summary as one HTML file:
 rates, credit spreads, economic data (FRED), market charts with moving averages,
 RSI and Bollinger bands, relative-value tables (Yahoo Finance), economic and
-earnings calendars (Financial Modeling Prep), and headlines.
+earnings calendars, and headlines (Yahoo Finance).
 
 ```bash
 pip install -r requirements.txt
 export FRED_API_KEY=...   # free: https://fred.stlouisfed.org/docs/api/api_key.html
-export FMP_API_KEY=...    # for the calendars: https://site.financialmodelingprep.com
 python market_report.py   # writes reports/market_report_YYYY-MM-DD.html
 ```
 
